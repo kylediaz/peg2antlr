@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/pointlander/peg/tree"
 )
 
 func main() {
 	// Check if the correct number of arguments are provided
 	if len(os.Args) < 2 || len(os.Args) > 3 {
-		fmt.Println("Usage: go run main.go peg_input.peg [antlr_output.g4]")
+		fmt.Println("Usage: go run main.go peg_input.peg [antlr_output]")
 		return
 	}
 
@@ -53,17 +51,11 @@ func main() {
 }
 
 func Peg2Antlr(input string, lexerOutput, parserOutput *bytes.Buffer) error {
-	p := &Peg{
-		Tree:   tree.New(false, false, false),
-		Buffer: input,
-	}
-	p.Init(Pretty(true), Size(1<<15))
-	if err := p.Parse(); err != nil {
+	ast, err := peg2ast(input)
+	if err != nil {
 		return err
 	}
-	p.Execute()
 
-	ast := p.AST()
 	cleanAst(ast)
 	ast = remove(ast, ruleComment)
 
@@ -71,7 +63,8 @@ func Peg2Antlr(input string, lexerOutput, parserOutput *bytes.Buffer) error {
 	labels := labelTokens(literals, input)
 	outputLexer(labels, lexerOutput)
 
-	peg2AntlrImpl(ast, input, parserOutput)
+	parserOutput.WriteString("parser grammar outputParser;\noptions { tokenVocab=outputLexer; }\n\n")
+	peg2AntlrParserImpl(ast, input, parserOutput)
 
 	return nil
 }
@@ -132,40 +125,22 @@ func outputLexer(labels map[string]string, output *bytes.Buffer) {
 // Transforming the Definitions to ANTLR
 ////////////////////////////////////////////////////////////////////////////////
 
-func Peg2AntlrParser(input string) (string, error) {
-	p := &Peg{
-		Tree:   tree.New(false, false, false),
-		Buffer: input,
-	}
-	p.Init(Pretty(true), Size(1<<15))
-	if err := p.Parse(); err != nil {
-		return "", err
-	}
-	p.Execute()
-
-	var output bytes.Buffer
-	output.WriteString("parser grammar outputParser;\noptions { tokenVocab=outputLexer; }\n\n")
-	ast := p.AST()
-
-	cleanAst(ast)
-	peg2AntlrImpl(ast, input, &output)
-
-	return output.String(), nil
-}
-
-func peg2AntlrImpl(node *node32, rawInput string, outputBuffer *bytes.Buffer) {
+func peg2AntlrParserImpl(node *node32, rawInput string, outputBuffer *bytes.Buffer) {
 	for node != nil {
-		peg2AntlrImpl2(node, rawInput, outputBuffer)
+		peg2AntlrParserImpl2(node, rawInput, outputBuffer)
 		node = node.next
 	}
 }
 
-func peg2AntlrImpl2(node *node32, rawInput string, outputBuffer *bytes.Buffer) {
-	_print := func(format string, a ...interface{}) { fmt.Fprintf(outputBuffer, format, a...) }
+func peg2AntlrParserImpl2(node *node32, rawInput string, outputBuffer *bytes.Buffer) {
+	if node == nil {
+		panic("peg2AntlrParser should not visit a nil node!")
+	}
 	rawValue := getRawNodeValue(node, rawInput)
-	_printRaw := func() { _print(rawValue) }
 
-	_descend := func() { peg2AntlrImpl(node.up, rawInput, outputBuffer) }
+	_print := func(format string, a ...interface{}) { fmt.Fprintf(outputBuffer, format, a...) }
+	_printRaw := func() { _print(rawValue) }
+	_descend := func() { peg2AntlrParserImpl(node.up, rawInput, outputBuffer) }
 
 	switch node.pegRule {
 	// Skip
@@ -186,16 +161,16 @@ func peg2AntlrImpl2(node *node32, rawInput string, outputBuffer *bytes.Buffer) {
 		_print(" %s", value)
 	case ruleExpression:
 		var expressionOutput bytes.Buffer
-		peg2AntlrImpl(node.up, rawInput, &expressionOutput)
+		peg2AntlrParserImpl(node.up, rawInput, &expressionOutput)
 		expression := expressionOutput.String()
-		expression = strings.Replace(expression, "\n", "", 0)
+		expression = strings.Replace(expression, "\n", "", -1)
 		_print(expression)
 	case ruleNot:
 		_print("~")
 	case ruleLeftArrow:
 		_print(":")
 	case ruleSlash:
-		_print(" | ")
+		_print(" |")
 	case ruleStar:
 		_print("*")
 		_descend()
